@@ -1,0 +1,10 @@
+DesktopBox.exe
+*.zip
+*.user
+*.suo
+bin/
+obj/
+dist/
+.vs/
+桌面应用.lnk
+screenshots/desktop.png
