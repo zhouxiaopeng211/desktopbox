@@ -12,7 +12,7 @@ if not exist "%CSC%" (
   /out:"%ROOT%DesktopBox.exe" ^
   /win32icon:"%ROOT%src\icon.ico" ^
   /win32manifest:"%ROOT%src\app.manifest" ^
-  /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll ^
+  /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:Microsoft.VisualBasic.dll ^
   "%ROOT%src\DesktopBox.cs"
 
 if errorlevel 1 exit /b 1

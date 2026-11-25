@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
+using Microsoft.VisualBasic.FileIO;
 
 namespace DesktopBox
 {
@@ -24,24 +25,37 @@ namespace DesktopBox
         public static readonly int WM_TOGGLE = RegisterWindowMessage("DesktopBox.Toggle.v1");
 
         [STAThread]
-        private static void Main()
+        private static void Main(string[] args)
         {
             bool created;
             using (Mutex mutex = new Mutex(true, "DesktopBox.SingleInstance.v1", out created))
             {
                 if (!created)
                 {
-                    IntPtr h = FindWindow(null, "桌面应用盒子");
-                    if (h != IntPtr.Zero)
-                    {
-                        PostMessage(h, WM_TOGGLE, IntPtr.Zero, IntPtr.Zero);
-                    }
+                    PostMessage((IntPtr)0xFFFF, WM_TOGGLE, IntPtr.Zero, IntPtr.Zero);
                     return;
                 }
 
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                Application.Run(new BoxForm());
+
+                if (args.Length > 0 && args[0] == "--paste-test")
+                {
+                    BoxForm test = new BoxForm();
+                    test.TestPaste();
+                    return;
+                }
+
+                try
+                {
+                    Application.Run(new BoxForm());
+                }
+                catch (Exception ex)
+                {
+                    try { File.AppendAllText(Path.Combine(Path.GetTempPath(), "DesktopBox-startup.log"), "CRASH " + ex + Environment.NewLine); }
+                    catch { }
+                    throw;
+                }
             }
         }
     }
@@ -139,6 +153,9 @@ namespace DesktopBox
         private Item menuItem;
         private ToolStripMenuItem emptyBinItem;
         private bool menuOpen;
+        private string clipboardPath;
+        private bool clipboardCut;
+        private DateTime shownAt = DateTime.MinValue;
 
         private string HiddenFile
         {
@@ -150,8 +167,18 @@ namespace DesktopBox
             }
         }
 
+        private static void Log(string message)
+        {
+            try
+            {
+                File.AppendAllText(Path.Combine(Path.GetTempPath(), "DesktopBox-startup.log"), DateTime.Now.ToString("HH:mm:ss") + " " + message + Environment.NewLine);
+            }
+            catch { }
+        }
+
         public BoxForm()
         {
+            Log("ctor");
             Text = "桌面应用盒子";
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
@@ -164,13 +191,17 @@ namespace DesktopBox
             AutoScaleMode = AutoScaleMode.Dpi;
 
             BuildUi();
+            Log("ui");
             LoadHidden();
             LoadItems();
+            Log("items");
             BuildTray();
             RenderGrid();
+            Log("grid");
             StartDesktopHider();
             Shown += delegate
             {
+                Log("shown");
                 SendMessage(search.Handle, 0x1501, IntPtr.Zero, "搜索桌面项目…");
                 ShowPanel();
             };
@@ -262,6 +293,13 @@ namespace DesktopBox
             grid.WrapContents = true;
             grid.BackColor = Color.Transparent;
             grid.Padding = new Padding(10, 2, 6, 2);
+            grid.AllowDrop = true;
+            grid.DragEnter += OnFileDragEnter;
+            grid.DragDrop += OnFileDrop;
+
+            AllowDrop = true;
+            DragEnter += OnFileDragEnter;
+            DragDrop += OnFileDrop;
 
             emptyLabel = new Label();
             emptyLabel.Dock = DockStyle.Fill;
@@ -312,9 +350,16 @@ namespace DesktopBox
             tileMenu.Closed += delegate { menuOpen = false; };
             tileMenu.Items.Add("打开", null, delegate { OpenItem(menuItem); });
             tileMenu.Items.Add("打开所在位置", null, delegate { RevealItem(menuItem); });
+            tileMenu.Items.Add(new ToolStripSeparator());
+            tileMenu.Items.Add("复制", null, delegate { CopyItem(menuItem); });
+            tileMenu.Items.Add("剪切", null, delegate { CutItem(menuItem); });
+            tileMenu.Items.Add("粘贴到桌面", null, delegate { PasteToDesktop(); });
+            tileMenu.Items.Add("删除", null, delegate { DeleteItem(menuItem); });
+            tileMenu.Items.Add("移动到…", null, delegate { MoveItemDialog(menuItem); });
+            tileMenu.Items.Add("重命名", null, delegate { RenameItem(menuItem); });
+            tileMenu.Items.Add(new ToolStripSeparator());
             emptyBinItem = new ToolStripMenuItem("清空回收站", null, delegate { EmptyRecycleBin(); });
             tileMenu.Items.Add(emptyBinItem);
-            tileMenu.Items.Add(new ToolStripSeparator());
             tileMenu.Items.Add("从盒子隐藏", null, delegate { HideItem(menuItem); });
         }
 
@@ -567,6 +612,19 @@ namespace DesktopBox
                 tile.DoubleClick += OnTileDoubleClick;
                 tile.MouseDown += OnTileMouseDown;
                 tile.ContextMenuStrip = tileMenu;
+
+                Point dragStart = Point.Empty;
+                tile.MouseDown += delegate(object s, MouseEventArgs e)
+                {
+                    if (e.Button == MouseButtons.Left) dragStart = e.Location;
+                };
+                tile.MouseMove += delegate(object s, MouseEventArgs e)
+                {
+                    if (e.Button != MouseButtons.Left) return;
+                    if (Math.Abs(e.X - dragStart.X) < 6 && Math.Abs(e.Y - dragStart.Y) < 6) return;
+                    dragStart = Point.Empty;
+                    DoDragDrop(new DataObject(DataFormats.FileDrop, new string[] { tile.Data.Path }), DragDropEffects.Copy | DragDropEffects.Move);
+                };
                 grid.Controls.Add(tile);
                 tiles.Add(tile);
                 shown++;
@@ -723,15 +781,237 @@ namespace DesktopBox
             }
         }
 
+        public void TestPaste()
+        {
+            PasteToDesktop();
+        }
+
+        private static string DesktopPath
+        {
+            get { return Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory); }
+        }
+
+        private void CopyItem(Item it)
+        {
+            if (it == null || it.IsSpecial) return;
+            clipboardPath = it.Path;
+            clipboardCut = false;
+        }
+
+        private void CutItem(Item it)
+        {
+            if (it == null || it.IsSpecial) return;
+            clipboardPath = it.Path;
+            clipboardCut = true;
+        }
+
+        private void PasteToDesktop()
+        {
+            try
+            {
+                if (Clipboard.ContainsFileDropList())
+                {
+                    foreach (string path in Clipboard.GetFileDropList())
+                    {
+                        CopyToFolder(path, DesktopPath);
+                    }
+                }
+                else if (!string.IsNullOrEmpty(clipboardPath))
+                {
+                    if (clipboardCut)
+                    {
+                        MoveToFolder(clipboardPath, DesktopPath);
+                        clipboardPath = null;
+                    }
+                    else
+                    {
+                        CopyToFolder(clipboardPath, DesktopPath);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("粘贴失败：" + ex.Message, "桌面应用");
+            }
+            LoadItems();
+            RenderGrid();
+        }
+
+        private void DeleteItem(Item it)
+        {
+            if (it == null || it.IsSpecial) return;
+            DialogResult answer = MessageBox.Show("把“" + it.Name + "”删除到回收站？", "删除", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (answer != DialogResult.Yes) return;
+
+            try
+            {
+                if (Directory.Exists(it.Path))
+                {
+                    FileSystem.DeleteDirectory(it.Path, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin);
+                }
+                else
+                {
+                    FileSystem.DeleteFile(it.Path, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("删除失败：" + ex.Message, "桌面应用");
+            }
+            LoadItems();
+            RenderGrid();
+        }
+
+        private void MoveItemDialog(Item it)
+        {
+            if (it == null || it.IsSpecial) return;
+            using (FolderBrowserDialog dialog = new FolderBrowserDialog())
+            {
+                dialog.Description = "把“" + it.Name + "”移动到：";
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                try
+                {
+                    MoveToFolder(it.Path, dialog.SelectedPath);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("移动失败：" + ex.Message, "桌面应用");
+                }
+            }
+            LoadItems();
+            RenderGrid();
+        }
+
+        private void RenameItem(Item it)
+        {
+            if (it == null || it.IsSpecial) return;
+            string newName = Microsoft.VisualBasic.Interaction.InputBox("输入新名称", "重命名", it.Name);
+            if (string.IsNullOrEmpty(newName) || newName == it.Name) return;
+            if (newName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            {
+                MessageBox.Show("名称里有非法字符", "重命名");
+                return;
+            }
+
+            try
+            {
+                string dir = Path.GetDirectoryName(it.Path);
+                string dest = Path.Combine(dir, newName);
+                if (File.Exists(dest) || Directory.Exists(dest))
+                {
+                    MessageBox.Show("同名项目已存在", "重命名");
+                    return;
+                }
+                if (Directory.Exists(it.Path)) Directory.Move(it.Path, dest);
+                else File.Move(it.Path, dest);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("重命名失败：" + ex.Message, "桌面应用");
+            }
+            LoadItems();
+            RenderGrid();
+        }
+
+        private static string UniquePath(string path)
+        {
+            if (!File.Exists(path) && !Directory.Exists(path)) return path;
+            string dir = Path.GetDirectoryName(path);
+            string name = Path.GetFileName(path);
+            string baseName = Path.GetFileNameWithoutExtension(name);
+            string ext = Path.GetExtension(name);
+            for (int i = 1; i < 1000; i++)
+            {
+                string candidate = Path.Combine(dir, baseName + " (" + i + ")" + ext);
+                if (!File.Exists(candidate) && !Directory.Exists(candidate)) return candidate;
+            }
+            return path;
+        }
+
+        private static void CopyToFolder(string source, string targetDir)
+        {
+            string name = Path.GetFileName(source.TrimEnd('\\', '/'));
+            string dest = UniquePath(Path.Combine(targetDir, name));
+            if (Directory.Exists(source)) CopyDirectory(source, dest);
+            else File.Copy(source, dest, false);
+        }
+
+        private static void MoveToFolder(string source, string targetDir)
+        {
+            string name = Path.GetFileName(source.TrimEnd('\\', '/'));
+            string dest = UniquePath(Path.Combine(targetDir, name));
+            if (Directory.Exists(source))
+            {
+                try
+                {
+                    Directory.Move(source, dest);
+                }
+                catch
+                {
+                    CopyDirectory(source, dest);
+                    FileSystem.DeleteDirectory(source, UIOption.OnlyErrorDialogs, RecycleOption.DeletePermanently);
+                }
+            }
+            else
+            {
+                try
+                {
+                    File.Move(source, dest);
+                }
+                catch
+                {
+                    File.Copy(source, dest, false);
+                    File.Delete(source);
+                }
+            }
+        }
+
+        private static void CopyDirectory(string source, string dest)
+        {
+            Directory.CreateDirectory(dest);
+            foreach (string file in Directory.GetFiles(source))
+            {
+                File.Copy(file, Path.Combine(dest, Path.GetFileName(file)), true);
+            }
+            foreach (string dir in Directory.GetDirectories(source))
+            {
+                CopyDirectory(dir, Path.Combine(dest, Path.GetFileName(dir)));
+            }
+        }
+
+        private void OnFileDragEnter(object sender, DragEventArgs e)
+        {
+            if (e.Data.GetDataPresent(DataFormats.FileDrop)) e.Effect = DragDropEffects.Copy;
+        }
+
+        private void OnFileDrop(object sender, DragEventArgs e)
+        {
+            if (!e.Data.GetDataPresent(DataFormats.FileDrop)) return;
+            string[] paths = (string[])e.Data.GetData(DataFormats.FileDrop);
+            try
+            {
+                foreach (string path in paths) CopyToFolder(path, DesktopPath);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("拖入失败：" + ex.Message, "桌面应用");
+            }
+            LoadItems();
+            RenderGrid();
+        }
+
         private void ShowPanel()
         {
+            Log("showpanel");
             LoadItems();
             RenderGrid();
 
             Rectangle wa = Screen.PrimaryScreen.WorkingArea;
             Left = wa.Left + 12;
             Top = wa.Bottom - Height - 76;
+            shownAt = DateTime.Now;
             Show();
+            SetForegroundWindow(Handle);
             Activate();
             search.Focus();
             search.SelectAll();
@@ -776,13 +1056,44 @@ namespace DesktopBox
         protected override void OnDeactivate(EventArgs e)
         {
             base.OnDeactivate(e);
-            if (!menuOpen) HidePanel();
         }
 
         protected override void OnKeyDown(KeyEventArgs e)
         {
             base.OnKeyDown(e);
-            if (e.KeyCode == Keys.Escape) HidePanel();
+            if (e.KeyCode == Keys.Escape)
+            {
+                HidePanel();
+                return;
+            }
+
+            Item current = selectedTile != null ? selectedTile.Data : null;
+
+            if (e.Control && e.KeyCode == Keys.C)
+            {
+                CopyItem(current);
+                e.Handled = true;
+            }
+            else if (e.Control && e.KeyCode == Keys.X)
+            {
+                CutItem(current);
+                e.Handled = true;
+            }
+            else if (e.Control && e.KeyCode == Keys.V)
+            {
+                PasteToDesktop();
+                e.Handled = true;
+            }
+            else if (e.KeyCode == Keys.Delete)
+            {
+                DeleteItem(current);
+                e.Handled = true;
+            }
+            else if (e.KeyCode == Keys.F2)
+            {
+                RenameItem(current);
+                e.Handled = true;
+            }
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -836,6 +1147,9 @@ namespace DesktopBox
 
         [DllImport("user32.dll")]
         private static extern IntPtr GetShellWindow();
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
 
         [DllImport("shell32.dll")]
         private static extern void SHGetSetSettings(IntPtr pss, uint mask, bool set);

@@ -14,7 +14,7 @@ if (-not (Test-Path $csc)) {
     /out:"$root\DesktopBox.exe" `
     /win32icon:"$root\src\icon.ico" `
     /win32manifest:"$root\src\app.manifest" `
-    /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll `
+    /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:Microsoft.VisualBasic.dll `
     "$root\src\DesktopBox.cs"
 
 if ($LASTEXITCODE -ne 0) { throw "编译失败" }
