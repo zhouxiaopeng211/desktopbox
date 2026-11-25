@@ -133,6 +133,7 @@ namespace DesktopBox
         private NotifyIcon tray;
         private ToolStripMenuItem desktopIconsItem;
         private bool iconsHidden;
+        private System.Windows.Forms.Timer hiderTimer;
         private int category = CAT_ALL;
         private Tile selectedTile;
         private Item menuItem;
@@ -167,6 +168,7 @@ namespace DesktopBox
             LoadItems();
             BuildTray();
             RenderGrid();
+            StartDesktopHider();
             Shown += delegate
             {
                 SendMessage(search.Handle, 0x1501, IntPtr.Zero, "搜索桌面项目…");
@@ -316,6 +318,53 @@ namespace DesktopBox
             tileMenu.Items.Add("从盒子隐藏", null, delegate { HideItem(menuItem); });
         }
 
+        private void StartDesktopHider()
+        {
+            HideNewDesktopItems();
+            hiderTimer = new System.Windows.Forms.Timer();
+            hiderTimer.Interval = 1500;
+            hiderTimer.Tick += delegate { HideNewDesktopItems(); };
+            hiderTimer.Start();
+        }
+
+        private void HideNewDesktopItems()
+        {
+            string[] folders = new string[]
+            {
+                Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory)
+            };
+
+            foreach (string folder in folders)
+            {
+                if (folder == null || folder.Length == 0 || !Directory.Exists(folder)) continue;
+                string[] entries;
+                try { entries = Directory.GetFileSystemEntries(folder); }
+                catch { continue; }
+
+                foreach (string path in entries)
+                {
+                    string name = Path.GetFileName(path);
+                    if (name.Equals("desktop.ini", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (name.Equals("thumbs.db", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (name.Equals("桌面应用盒子.lnk", StringComparison.OrdinalIgnoreCase)) continue;
+
+                    try
+                    {
+                        FileAttributes attrs = File.GetAttributes(path);
+                        if ((attrs & FileAttributes.Hidden) == 0)
+                        {
+                            File.SetAttributes(path, attrs | FileAttributes.Hidden);
+                        }
+                    }
+                    catch
+                    {
+                        /* public desktop or locked file: retry next tick */
+                    }
+                }
+            }
+        }
+
         private void BuildTray()
         {
             tray = new NotifyIcon();
@@ -410,6 +459,7 @@ namespace DesktopBox
                 {
                     string fileName = Path.GetFileName(path).ToLowerInvariant();
                     if (fileName == "desktop.ini" || fileName == "thumbs.db") continue;
+                    if (fileName == "桌面应用盒子.lnk") continue;
                     if (hidden.Contains(path)) continue;
 
                     bool isDir;
