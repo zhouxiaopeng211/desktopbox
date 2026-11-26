@@ -38,6 +38,16 @@ namespace DesktopBox
 
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
+                Application.ThreadException += delegate(object s, System.Threading.ThreadExceptionEventArgs e)
+                {
+                    try { File.AppendAllText(Path.Combine(Path.GetTempPath(), "DesktopBox-startup.log"), "THREAD-EX " + e.Exception + Environment.NewLine); }
+                    catch { }
+                };
+                AppDomain.CurrentDomain.UnhandledException += delegate(object s, UnhandledExceptionEventArgs e)
+                {
+                    try { File.AppendAllText(Path.Combine(Path.GetTempPath(), "DesktopBox-startup.log"), "UNHANDLED " + e.ExceptionObject + Environment.NewLine); }
+                    catch { }
+                };
 
                 if (args.Length > 0 && args[0] == "--paste-test")
                 {
@@ -203,7 +213,6 @@ namespace DesktopBox
             {
                 Log("shown");
                 SendMessage(search.Handle, 0x1501, IntPtr.Zero, "搜索桌面项目…");
-                ShowPanel();
             };
         }
 
@@ -1011,11 +1020,15 @@ namespace DesktopBox
             Top = wa.Bottom - Height - 76;
             shownAt = DateTime.Now;
             Show();
+            Log("after-show visible=" + Visible);
             SetForegroundWindow(Handle);
+            Log("after-foreground");
             Activate();
+            Log("after-activate");
             search.Focus();
             search.SelectAll();
             ApplyRoundedRegion();
+            Log("after-region visible=" + Visible);
         }
 
         private void HidePanel()
@@ -1025,8 +1038,7 @@ namespace DesktopBox
 
         private void TogglePanel()
         {
-            if (Visible) HidePanel();
-            else ShowPanel();
+            ShowPanel();
         }
 
         private void ApplyRoundedRegion()
@@ -1150,6 +1162,9 @@ namespace DesktopBox
 
         [DllImport("user32.dll")]
         private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
 
         [DllImport("shell32.dll")]
         private static extern void SHGetSetSettings(IntPtr pss, uint mask, bool set);

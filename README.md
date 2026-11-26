@@ -45,7 +45,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 | 操作 | 行为 |
 | --- | --- |
-| 点 Dock 图标 / 双击 lnk | 展开面板；再点一次收起 |
+| 点 Dock 图标 / 双击 lnk | 显示面板并置前（不会再把面板关掉） |
 | 点面板外 / Esc | 收起（当前版本改为按 Esc 或 × 关闭，避免启动时误隐藏） |
 | 单击图标 | 选中 |
 | 双击图标 | 用系统默认程序打开 |
